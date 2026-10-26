@@ -104,9 +104,16 @@ let $estimated_rows = query_get_value("$sql", Query Plan, 5);
 --echo $estimated_rows
 SELECT id FROM vector_exclusion_sel WHERE c != 1 AND c != 2 AND c != 3 AND c != 4;
 
-# Controlled cardinality crosses the adaptive scan threshold without a large
-# data load. Equal filters must choose the same initial scan strategy.
-CALL dbms_stats.set_table_stats('test','vector_exclusion_sel',numrows=>50000);
+# Small result sets retain the brute-force/pre-filter path.
+--echo # Small-result strategy
+let $sql = EXPLAIN FORMAT=JSON SELECT id FROM vector_exclusion_sel WHERE c NOT IN (1,2,3,4) ORDER BY l2_distance(v,'[0,0,0]') APPROXIMATE LIMIT 10;
+let $scan_operator = query_get_value("$sql", Query Plan, 3);
+--echo $scan_operator
+
+# Controlled cardinality models a million-row table without a large data load.
+# At ~16.7% selectivity, equal filters must use iterative filtering instead of
+# scanning the full candidate set before HNSW search.
+CALL dbms_stats.set_table_stats('test','vector_exclusion_sel',numrows=>1000000);
 --echo # NOT IN strategy
 let $sql = EXPLAIN FORMAT=JSON SELECT id FROM vector_exclusion_sel WHERE c NOT IN (1,2,3,4) ORDER BY l2_distance(v,'[0,0,0]') APPROXIMATE LIMIT 10;
 let $scan_operator = query_get_value("$sql", Query Plan, 3);
