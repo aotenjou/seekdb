@@ -82,13 +82,20 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
                                       ObIJsonBase *&result)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParseHelper tokenize_helper;
   const int64_t ft_word_bkt_cnt = MIN(MAX(param.fulltext_.length() / 2, 2), 997);
   int64_t doc_len = 0;
-  // TOKENIZE runs once per row in many FTS workloads. Retain the hash map's
-  // node-block allocator on this worker thread while recreating the bucket
-  // array with the same input-dependent size used by the original path.
+  // TOKENIZE runs once per row in many FTS workloads. Keep the hash map on
+  // this worker thread so its bucket array and node-block allocator can be
+  // reused across evaluations with the same input-dependent bucket count.
   static thread_local storage::ObFTWordMap token_map;
+  // The default parser configuration has no explicit properties. Its parsed
+  // helper is immutable, so keep it on the worker thread and only refresh the
+  // per-evaluation allocator pointer. Explicit properties keep the original
+  // per-call lifetime because their strings may point into temporary JSON.
+  static thread_local storage::ObFTParseHelper cached_helper;
+  static thread_local std::string cached_parser_name;
+  storage::ObFTParseHelper local_helper;
+  storage::ObFTParseHelper *tokenize_helper = &local_helper;
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
@@ -96,10 +103,29 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
              && OB_FAIL(token_map.destroy())) {
   } else if (!token_map.created()
              && OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
-  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
+  } else if (param.properties_.empty()) {
+    const bool same_parser = cached_helper.is_inited()
+        && cached_parser_name.size() == static_cast<size_t>(param.parser_name_.length())
+        && 0 == MEMCMP(cached_parser_name.data(), param.parser_name_.ptr(), param.parser_name_.length());
+    if (!same_parser) {
+      cached_helper.reset();
+      if (OB_FAIL(cached_helper.init(&allocator, param.parser_name_, param.properties_))) {
+      } else {
+        cached_parser_name.assign(param.parser_name_.ptr(), param.parser_name_.length());
+      }
+    } else {
+      cached_helper.set_allocator(&allocator);
+    }
+    if (OB_SUCC(ret)) {
+      tokenize_helper = &cached_helper;
+    }
+  } else if (OB_FAIL(local_helper.init(&allocator, param.parser_name_, param.properties_))) {
+  }
+
+  if (OB_FAIL(ret)) {
   } else if (
       (0 != param.fulltext_.length())
-      && OB_FAIL(tokenize_helper.segment(
+      && OB_FAIL(tokenize_helper->segment(
                      param.meta_,
                      param.fulltext_.ptr(),
                      param.fulltext_.length(),
@@ -108,14 +134,14 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
   } else {
     switch (param.output_mode_) {
     case TokenizeParam::OUTPUT_MODE::DEFAULT: {
-      if (OB_FAIL(tokenize_helper.make_token_array_json(token_map, result))) {
+      if (OB_FAIL(tokenize_helper->make_token_array_json(token_map, result))) {
       } else {
         // pass
       }
       break;
     }
     case TokenizeParam::OUTPUT_MODE::ALL: {
-      if (OB_FAIL(tokenize_helper.make_detail_json(token_map, doc_len, result))) {
+      if (OB_FAIL(tokenize_helper->make_detail_json(token_map, doc_len, result))) {
       } else {
         // pass
       }
@@ -125,17 +151,10 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
       ret = OB_INVALID_ARGUMENT;
     }
   }
-  // Destroying the table releases its bucket array and returns its nodes to
-  // the thread-local block allocator. No key points into a later evaluation.
-  if (token_map.created()) {
-    int destroy_ret = token_map.destroy();
-    if (OB_SUCCESS != destroy_ret) {
-      LOG_WARN("failed to destroy thread-local FTS token map", K(destroy_ret));
-      if (OB_SUCC(ret)) {
-        ret = destroy_ret;
-      }
-    }
-  }
+  // Keep the bucket array for the next evaluation on this worker thread. The
+  // next segment() call reuses the map before inserting new words; entries are
+  // never read between evaluations, so the map can retain the previous keys
+  // without dereferencing them.
   return ret;
 }
 
@@ -228,7 +247,8 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
   } else if (OB_FAIL(parse_fulltext(expr, ctx, param))) {
   } else if (OB_FAIL(parse_parser_name(expr, ctx, param))) {
   } else if (OB_FAIL(parse_parser_properties(expr, ctx, temp_allocator, param))) {
-  } else if (OB_FAIL(param.reform_parser_properties(param.properties_))) {
+  } else if (!param.properties_.empty()
+             && OB_FAIL(param.reform_parser_properties(param.properties_))) {
   } else if (OB_FAIL(param.try_load_dictionary_for_ik())) {
   }
   return ret;
@@ -238,6 +258,16 @@ int ObExprTokenize::construct_ft_parser_inner_name(const ObString &input_str, To
 {
   int ret = OB_SUCCESS;
   storage::ObFTParser parser;
+  // TOKENIZE is usually called with the same parser name for every row. Cache
+  // the already normalized "name.version" string to avoid re-parsing and a
+  // temporary allocation on each evaluation.
+  static thread_local std::string cached_input;
+  static thread_local std::string cached_name;
+  if (input_str.length() == static_cast<int32_t>(cached_input.size())
+      && 0 == MEMCMP(input_str.ptr(), cached_input.data(), input_str.length())) {
+    param.parser_name_.assign_ptr(cached_name.data(), static_cast<int32_t>(cached_name.size()));
+    return ret;
+  }
 
   char *parser_name_buf = nullptr;
   if (OB_ISNULL(parser_name_buf
@@ -246,7 +276,9 @@ int ObExprTokenize::construct_ft_parser_inner_name(const ObString &input_str, To
   } else if (OB_FAIL(parser.init(input_str))) {
   } else if (OB_FAIL(parser.serialize_to_str(parser_name_buf, storage::OB_FT_PARSER_NAME_LENGTH))) {
   } else {
-    param.parser_name_ = ObString::make_string(parser_name_buf);
+    cached_input.assign(input_str.ptr(), input_str.length());
+    cached_name.assign(parser_name_buf);
+    param.parser_name_.assign_ptr(cached_name.data(), static_cast<int32_t>(cached_name.size()));
   }
   return ret;
 }
@@ -424,17 +456,35 @@ int ObExprTokenize::TokenizeParam::try_load_dictionary_for_ik()
 {
   int ret = OB_SUCCESS;
   bool need_to_load_dic = false;
-  storage::ObDicLoaderHandle dic_loader_handle;
+  // The dictionary loader and its handle are process-global and never removed
+  // from the loader map. Keeping the handle on the worker thread avoids taking
+  // the loader map's write lock for every TOKENIZE evaluation.
+  static thread_local storage::ObDicLoaderHandle cached_handle;
+  static thread_local std::string cached_parser;
+  static thread_local ObCharsetType cached_charset = CHARSET_INVALID;
   if (OB_FAIL(share::ObFtsIndexBuilderUtil::check_need_to_load_dic(
           parser_name_, need_to_load_dic))) {
   } else if (need_to_load_dic) {
-    if (OB_FAIL(storage::ObGenDicLoader::get_instance().get_dic_loader(
-                    ObString::make_string(storage::ObFTSLiteral::PARSER_NAME_IK), // currently only ik, use parser_name_ without version suffix
-                    ObCharset::charset_type_by_coll(meta_.get_collation_type()),
-                    dic_loader_handle))) {
-    } else if (OB_UNLIKELY(!dic_loader_handle.is_valid())) {
-      ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(dic_loader_handle.get_loader()->try_load_dictionary_in_trans())) {
+    const ObCharsetType charset = ObCharset::charset_type_by_coll(meta_.get_collation_type());
+    const bool same = cached_handle.is_valid()
+        && cached_charset == charset
+        && cached_parser.size() == static_cast<size_t>(parser_name_.length())
+        && 0 == MEMCMP(cached_parser.data(), parser_name_.ptr(), parser_name_.length());
+    if (!same) {
+      cached_handle.reset();
+      if (OB_FAIL(storage::ObGenDicLoader::get_instance().get_dic_loader(
+                      ObString::make_string(storage::ObFTSLiteral::PARSER_NAME_IK), // currently only ik, use parser_name_ without version suffix
+                      charset,
+                      cached_handle))) {
+      } else if (OB_UNLIKELY(!cached_handle.is_valid())) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        cached_parser.assign(parser_name_.ptr(), parser_name_.length());
+        cached_charset = charset;
+      }
+    }
+    if (OB_SUCC(ret)
+        && OB_FAIL(cached_handle.get_loader()->try_load_dictionary_in_trans())) {
     }
   }
   return ret;

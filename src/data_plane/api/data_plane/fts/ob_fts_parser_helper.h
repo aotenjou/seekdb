@@ -204,6 +204,9 @@ public:
 
   void reset();
 
+  OB_INLINE bool is_inited() const { return is_inited_; }
+  OB_INLINE void set_allocator(common::ObIAllocator *allocator) { allocator_ = allocator; }
+
   TO_STRING_KV(KP_(allocator), K_(parser_name), KP_(parser_desc), K_(is_inited));
 
 private:

@@ -108,6 +108,47 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
   return ret;
 }
 
+namespace {
+// Most tokens (especially CJK text) do not contain any cased character. Avoid
+// copying the token into the evaluation allocator and running the full
+// decode/lowercase/encode path when the collation's case table has no mapping
+// for any code point.
+static bool needs_casedown(const ObString &word,
+                           const ObCollationType collation_type)
+{
+  bool need = true;
+  const ObCharsetInfo *cs = ObCharset::get_charset(collation_type);
+  if (OB_NOT_NULL(cs) && OB_NOT_NULL(cs->caseinfo) && OB_NOT_NULL(cs->cset)
+      && OB_NOT_NULL(cs->cset->mb_wc)) {
+    const ObUnicaseInfo *uni = cs->caseinfo;
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(word.ptr());
+    const unsigned char *end = p + word.length();
+    need = false;
+    while (p < end && !need) {
+      if (*p < 0x80) {
+        need = (*p >= 'A' && *p <= 'Z');
+        ++p;
+      } else {
+        ob_wc_t wc = 0;
+        const int len = cs->cset->mb_wc(cs, &wc, p, end);
+        if (OB_UNLIKELY(len <= 0)) {
+          need = true;
+        } else {
+          if (wc <= uni->maxchar) {
+            const ObUnicaseInfoChar *page = uni->page[wc >> 8];
+            if (OB_NOT_NULL(page) && page[wc & 0xFF].tolower != wc) {
+              need = true;
+            }
+          }
+          p += len;
+        }
+      }
+    }
+  }
+  return need;
+}
+} // namespace
+
 ////////////////////////////////////////////////////////////////////////////////
 // class ObAddWord
 ObAddWord::ObAddWord(
@@ -163,7 +204,8 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (flag_.casedown()) {
+  } else if (flag_.casedown()
+             && needs_casedown(src.get_word().get_string(), word_meta_.get_collation_type())) {
     ObString dst_str;
     if (OB_FAIL(ObCharset::tolower(
                     word_meta_.get_collation_type(),
@@ -195,23 +237,30 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
   return ret;
 }
 
+namespace {
+struct AddWordCount {
+public:
+  explicit AddWordCount(const int64_t freq) : freq_(freq) {}
+  template <typename Pair>
+  void operator()(Pair &pair) { pair.second += freq_; }
+private:
+  int64_t freq_;
+};
+} // namespace
+
 int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
 {
   int ret = OB_SUCCESS;
-  int64_t word_count = 0;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
   } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
-    } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+    // Insert with the original first-occurrence count or update the existing
+    // node in place, so the common repeated-word path performs one hash lookup.
+    AddWordCount add_count(word_freq);
+    if (OB_FAIL(word_map_.set_or_update(word, 1/*word count*/, add_count))) {
     }
   }
   return ret;
