@@ -181,6 +181,16 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   skip_locked_ = other.skip_locked_;
   node_ = other.node_; // should deep copy ? seems to be unnecessary
   snapshot_query_type_ = other.snapshot_query_type_;
+  file_table_type_ = other.file_table_type_;
+  file_table_column_count_ = other.file_table_column_count_;
+  file_table_header_ = other.file_table_header_;
+  file_table_field_delim_ = other.file_table_field_delim_;
+  file_table_quote_ = other.file_table_quote_;
+  file_table_escape_ = other.file_table_escape_;
+  file_table_size_ = other.file_table_size_;
+  file_table_mtime_ns_ = other.file_table_mtime_ns_;
+  file_table_dev_ = other.file_table_dev_;
+  file_table_ino_ = other.file_table_ino_;
   // ddl related
   ddl_schema_version_ = other.ddl_schema_version_;
   ddl_table_id_ = other.ddl_table_id_;
@@ -190,6 +200,8 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
       && OB_FAIL(deep_copy_json_table_def(*other.json_table_def_, expr_copier, allocator))) {
   } else if (OB_FAIL(expr_copier.copy(other.snapshot_query_expr_, snapshot_query_expr_))) {
   } else if (OB_FAIL(expr_copier.copy(other.function_table_expr_, function_table_expr_))) {
+  } else if (OB_NOT_NULL(allocator) && !other.file_table_null_str_.empty()
+             && OB_FAIL(ob_write_string(*allocator, other.file_table_null_str_, file_table_null_str_))) {
   } else if (OB_FAIL(part_ids_.assign(other.part_ids_))) {
   } else if (OB_FAIL(part_names_.assign(other.part_names_))) {
   } else if (is_values_table() &&

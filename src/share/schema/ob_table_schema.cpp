@@ -7107,6 +7107,17 @@ int64_t ObPrintableTableSchema::to_string(char *buf, const int64_t buf_len) cons
   return pos;
 }
 
+
+bool ObTableSchema::has_ai_column() const
+{
+  bool found = false;
+  for (int64_t i = 0; !found && i < get_column_count(); ++i) {
+    const ObColumnSchemaV2 *col = get_column_schema_by_idx(i);
+    found = (NULL != col && col->is_ai_column());
+  }
+  return found;
+}
+
 } //enf of namespace schema
 } //end of namespace share
 } //end of namespace oceanbase

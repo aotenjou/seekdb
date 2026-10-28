@@ -151,6 +151,9 @@ int ObAlterTableResolver::resolve(const ParseNode &parse_tree)
     //resolve action list
     if (OB_SUCCESS == ret && NULL != parse_tree.children_[ACTION_LIST]){
       if (OB_FAIL(resolve_action_list(*(parse_tree.children_[ACTION_LIST])))) {
+      } else if (OB_FAIL(finalize_ai_columns(
+                   alter_table_stmt->get_alter_table_arg().alter_table_schema_,
+                   table_schema_))) {
       } else if (OB_FAIL(set_table_options())) {
       } else if (OB_FAIL(check_semistruct_encoding_type(*table_schema_, alter_table_stmt->get_alter_table_schema()))) {
       } else {

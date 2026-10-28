@@ -48,7 +48,7 @@ int ObExprAIComplete::calc_result_typeN(ObExprResType &type,
 
   UNUSED(type_ctx);
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(param_num < 2 || param_num > 3)) {
+  if (OB_UNLIKELY(param_num < 2 || param_num > 4)) {
     ObString func_name_(get_name());
     ret = OB_ERR_PARAM_SIZE;
     LOG_USER_ERROR(OB_ERR_PARAM_SIZE, func_name_.length(), func_name_.ptr());
@@ -72,6 +72,14 @@ int ObExprAIComplete::calc_result_typeN(ObExprResType &type,
         }
       }
     }
+    if (OB_SUCC(ret) && param_num == 4) {
+      if (ob_is_string_type(types_stack[SYSTEM_IDX].get_type())) {
+        types_stack[SYSTEM_IDX].set_calc_type(ObVarcharType);
+        types_stack[SYSTEM_IDX].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
+      } else {
+        ret = OB_ERR_INVALID_TYPE_FOR_OP;
+      }
+    }
     if (OB_SUCC(ret)) {
       type.set_type(ObLongTextType);
       type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
@@ -90,7 +98,11 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
   ObDatum *arg_model_id = nullptr;
   ObDatum *arg_prompt = nullptr;
   ObDatum *arg_config = nullptr;
-  if (OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_prompt, arg_config))) {
+  ObDatum *arg_system = nullptr;
+  if (expr.arg_cnt_ == 2 ? OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_prompt))
+      : (expr.arg_cnt_ == 3
+             ? OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_prompt, arg_config))
+             : OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_prompt, arg_config, arg_system)))) {
   } else if (arg_model_id->is_null() || arg_prompt->is_null()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, parameters is null");
@@ -116,7 +128,7 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
       ObIJsonBase *j_base = nullptr;
       ObJsonObject *prompt_object = nullptr;
       bool is_null = false;
-      if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, temp_allocator, PROMPT_IDX, j_base, is_null))) {
+      if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, temp_allocator, PROMPT_IDX, j_base, is_null, true))) {
       } else if (j_base->json_type() != ObJsonNodeType::J_OBJECT) {
         ret = OB_INVALID_ARGUMENT;
       } else if (OB_FALSE_IT(prompt_object = static_cast<ObJsonObject *>(j_base))) {
@@ -124,21 +136,32 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
         ret = OB_INVALID_ARGUMENT;
         LOG_USER_ERROR(OB_INVALID_ARGUMENT, "prompt is not valid");
         res.set_null();
-      } else if (!ObAIFuncJsonUtils::ob_is_json_array_all_str(static_cast<ObJsonArray *>(prompt_object->get_value(ObAIFuncPromptObjectUtils::prompt_args_key)))) {
-        ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "prompt object is not support");
       } else if (OB_FAIL(ObAIFuncPromptObjectUtils::replace_all_str_args_in_template(temp_allocator, prompt_object, prompt))) {
       }
     } else if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator, *arg_prompt, expr.args_[1]->datum_meta_, expr.args_[1]->obj_meta_.has_lob_header(), prompt))) {
     }
 
     if (OB_FAIL(ret)) {
-    } else if (OB_NOT_NULL(arg_config)) {
-      if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator, *arg_config, expr.args_[2]->datum_meta_, expr.args_[2]->obj_meta_.has_lob_header(), config_str))) {
-      } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object_form_str(temp_allocator, config_str, config))) {
+    } else if (OB_NOT_NULL(arg_config) && !arg_config->is_null()) {
+      ObIJsonBase *config_base = nullptr;
+      bool is_null = false;
+      if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, temp_allocator, CONFIG_IDX,
+                                              config_base, is_null, true))) {
+      } else if (is_null || OB_ISNULL(config_base) || config_base->json_type() != ObJsonNodeType::J_OBJECT) {
+        ret = OB_INVALID_ARGUMENT;
+      } else {
+        config = static_cast<ObJsonObject *>(config_base);
       }
     }
 
+    ObString system_prompt;
+    if (OB_FAIL(ret)) {
+    } else if (OB_NOT_NULL(arg_system) && !arg_system->is_null()) {
+      if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator,
+              *arg_system, expr.args_[SYSTEM_IDX]->datum_meta_,
+              expr.args_[SYSTEM_IDX]->obj_meta_.has_lob_header(), system_prompt))) {
+      }
+    }
     if (OB_FAIL(ret)) {
     } else if (model_id.empty() || prompt.empty()) {
       ret = OB_INVALID_ARGUMENT;
@@ -155,10 +178,13 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
     } else {
       ObAIFuncModel model(temp_allocator, *info, *endpoint_info);
       ObString result;
-      if (OB_FAIL(model.call_completion(prompt, config, result))) {
+      if (OB_FAIL(model.call_completion(prompt, system_prompt, config, result))) {
       } else if (OB_FAIL(ObAIFuncUtils::set_string_result(expr, ctx, res, result))) {
       }
     }
+  }
+  if (OB_FAIL(ret)) {
+    LOG_WARN("AI_COMPLETE evaluation failed", K(ret), K(expr.arg_cnt_));
   }
   return ret;
 }

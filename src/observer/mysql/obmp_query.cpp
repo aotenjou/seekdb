@@ -20,6 +20,7 @@
 #include "observer/ob_server_runtime_access.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "observer/mysql/obmp_query.h"
+#include "observer/ai_service/ob_ai_column_worker.h"
 #include "sql/engine/ob_physical_plan.h"
 
 #include "observer/mysql/ob_sync_plan_driver.h"
@@ -86,6 +87,10 @@ int ObMPQuery::process()
     if (OB_SUCC(ret)) {
       int64_t database_schema_version = 0;
       session.set_thread_id(GETTID());
+      if (!session.is_in_transaction()) {
+        if (OB_SUCCESS != ObAiColumnWorker::process_pending()) {
+        }
+      }
       const ObMySQLRawPacket &pkt = reinterpret_cast<const ObMySQLRawPacket&>(req_->get_packet());
       int64_t packet_len = pkt.get_clen();
       req_->set_trace_point(ObRequest::OB_REQUEST_MPQUERY_PROCESS);
@@ -274,6 +279,21 @@ int ObMPQuery::process()
       tmp_ret = OB_CONNECT_ERROR;
       LOG_WARN("connection in error, maybe has disconnected", K(tmp_ret));
     } else if (OB_UNLIKELY(OB_SUCCESS != (tmp_ret = flush_buffer(true)))) {
+    }
+  }
+
+  if (OB_NOT_NULL(sess)) {
+    const char *sql_ptr = sql_.ptr();
+    while (OB_NOT_NULL(sql_ptr) && (' ' == *sql_ptr || '\t' == *sql_ptr || '\n' == *sql_ptr)) {
+      ++sql_ptr;
+    }
+    const bool is_rollback = OB_NOT_NULL(sql_ptr) && 0 == strncasecmp(sql_ptr, "rollback", 8);
+    const bool is_commit = OB_NOT_NULL(sql_ptr) && 0 == strncasecmp(sql_ptr, "commit", 6);
+    if (is_rollback) {
+      ObAiColumnWorker::remove_session_tasks(sess->get_server_sid());
+    }
+    if ((!sess->is_in_transaction() || is_commit)
+        && OB_SUCCESS != ObAiColumnWorker::process_pending()) {
     }
   }
 

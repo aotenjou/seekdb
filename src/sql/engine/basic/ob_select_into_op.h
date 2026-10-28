@@ -71,7 +71,9 @@ public:
       parallel_(1),
       buffer_size_(DEFAULT_BUFFER_SIZE),
       is_overwrite_(false),
-      external_properties_(alloc)
+      external_properties_(alloc),
+      with_header_(false),
+      header_names_(alloc)
   {
   }
 
@@ -91,6 +93,8 @@ public:
   int64_t buffer_size_;
   bool is_overwrite_;
   ObExternalFileFormat::StringData external_properties_;
+  bool with_header_;
+  common::ObFixedArray<common::ObString, common::ObIAllocator> header_names_;
   static const int64_t DEFAULT_MAX_FILE_SIZE = 256LL * 1024 * 1024;
   static const int64_t DEFAULT_BUFFER_SIZE = 1LL * 1024 * 1024;
 };
@@ -115,6 +119,7 @@ public:
       has_lob_(false),
       has_json_(false),
       has_coll_(false),
+      header_written_(false),
       print_params_(),
       escape_printer_(),
       json_buf_(NULL),
@@ -203,6 +208,7 @@ private:
   int into_dumpfile(ObExternalFileWriter *data_writer);
   int into_outfile(ObExternalFileWriter *data_writer);
   int into_outfile_batch_csv(const ObBatchRows &brs, ObExternalFileWriter *data_writer);
+  int write_csv_header(ObExternalFileWriter *data_writer);
   int extract_fisrt_wchar_from_varhcar(const ObObj &obj, int32_t &wchar);
   int print_wchar_to_buf(char *buf,
                          const int64_t buf_len,
@@ -280,6 +286,7 @@ private:
   bool has_lob_;
   bool has_json_;
   bool has_coll_;
+  bool header_written_;
   common::ObObjPrintParams print_params_;
   ObEscapePrinter escape_printer_;
   char *json_buf_;  // json needs one more buffer to hold the string before escaping

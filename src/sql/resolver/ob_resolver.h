@@ -47,6 +47,8 @@ private:
 
   template <typename SelectResolverType>
   int select_stmt_resolver_func(ObResolverParams &params, const ParseNode &parse_tree, ObStmt *&stmt);
+  int resolve_describe_select(const ParseNode &parse_tree, ObStmt *&stmt);
+  int resolve_copy_to(const ParseNode &parse_tree, ObStmt *&stmt);
 private:
   // data members
   ObResolverParams params_;

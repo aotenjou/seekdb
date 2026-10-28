@@ -109,6 +109,20 @@ struct ObDefaultValueRes
 class ObDDLResolver : public ObStmtResolver
 {
 public:
+  struct ObAiColumnSpec
+  {
+    ObAiColumnSpec() : column_id_(common::OB_INVALID_ID), column_name_(), expr_text_(),
+                       expr_node_(nullptr), max_retries_(0) {}
+    uint64_t column_id_;
+    common::ObString column_name_;
+    common::ObString expr_text_;
+    ParseNode *expr_node_;
+    int64_t max_retries_;
+  };
+  common::ObSEArray<ObAiColumnSpec, 4> ai_column_specs_;
+  int resolve_ai_column_attribute(share::schema::ObColumnSchemaV2 &column, ParseNode *attr_node);
+  int finalize_ai_columns(share::schema::ObTableSchema &table_schema,
+                          const share::schema::ObTableSchema *base_table_schema = nullptr);
   enum INDEX_TYPE {
     NOT_SPECIFIED = 0,
     LOCAL_INDEX = 1,

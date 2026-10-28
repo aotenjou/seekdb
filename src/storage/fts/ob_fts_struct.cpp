@@ -28,7 +28,17 @@ namespace storage
 int ObFTWord::hash(uint64_t &hash_val) const
 {
   int ret = OB_SUCCESS;
-  common::ObDatumBasicFuncs *funcs = ObDatumFuncs::get_basic_func(meta_.get_type(), meta_.get_collation_type());
+  static thread_local common::ObDatumBasicFuncs *cached_funcs = nullptr;
+  static thread_local ObObjType cached_type = ObMaxType;
+  static thread_local ObCollationType cached_collation = CS_TYPE_INVALID;
+  const ObObjType type = meta_.get_type();
+  const ObCollationType collation = meta_.get_collation_type();
+  if (OB_ISNULL(cached_funcs) || cached_type != type || cached_collation != collation) {
+    cached_funcs = ObDatumFuncs::get_basic_func(type, collation);
+    cached_type = type;
+    cached_collation = collation;
+  }
+  common::ObDatumBasicFuncs *funcs = cached_funcs;
   if (OB_ISNULL(funcs)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (funcs->default_hash_ == nullptr) {
@@ -43,7 +53,27 @@ bool ObFTWord::operator==(const ObFTWord &other) const
   bool is_equal = false;
   int ret = OB_SUCCESS;
   int cmp_ret = 0;
-  ObDatumCmpFuncType func = get_datum_cmp_func(meta_, other.meta_);
+  if (word_.len_ == other.word_.len_
+      && (0 == word_.len_ || 0 == MEMCMP(word_.ptr_, other.word_.ptr_, word_.len_))) {
+    return true;
+  }
+  static thread_local ObDatumCmpFuncType cached_func = nullptr;
+  static thread_local ObObjType cached_type = ObMaxType;
+  static thread_local ObCollationType cached_collation = CS_TYPE_INVALID;
+  static thread_local ObObjType cached_other_type = ObMaxType;
+  static thread_local ObCollationType cached_other_collation = CS_TYPE_INVALID;
+  if (OB_ISNULL(cached_func)
+      || cached_type != meta_.get_type()
+      || cached_collation != meta_.get_collation_type()
+      || cached_other_type != other.meta_.get_type()
+      || cached_other_collation != other.meta_.get_collation_type()) {
+    cached_func = get_datum_cmp_func(meta_, other.meta_);
+    cached_type = meta_.get_type();
+    cached_collation = meta_.get_collation_type();
+    cached_other_type = other.meta_.get_type();
+    cached_other_collation = other.meta_.get_collation_type();
+  }
+  ObDatumCmpFuncType func = cached_func;
   if (func == nullptr) {
     ob_abort();
   } else if (OB_FAIL(func(word_, other.word_, cmp_ret, nullptr))) {

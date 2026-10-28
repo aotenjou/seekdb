@@ -20,6 +20,7 @@
 #include "share/ob_autoincrement_service.h"
 #include "query/session/ob_inner_sql_connection_access.h"
 #include "sql/engine/ob_physical_plan.h"
+#include "sql/engine/dml/ob_ai_column_dml_helper.h"
 #include "sql/engine/dml/ob_dml_service.h"
 
 namespace oceanbase
@@ -637,6 +638,7 @@ int ObTableModifyOp::inner_open()
 {
   int ret = OB_SUCCESS;
   ObSQLSessionInfo *my_session = GET_MY_SESSION(ctx_);
+  ObAiColumnDmlHelper::reset();
   if (OB_FAIL(init_foreign_key_operation())) {
   } else if (MY_SPEC.plan_->has_nested_sql() && OB_FAIL(open_inner_conn())) {
   } else if (OB_FAIL(calc_single_table_loc())) {

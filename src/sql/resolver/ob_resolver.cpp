@@ -20,6 +20,10 @@
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "sql/resolver/cmd/ob_alter_system_resolver.h"
 #include "sql/resolver/dml/ob_insert_resolver.h"
+#include "sql/resolver/dml/ob_select_resolver.h"
+#include "sql/resolver/dml/ob_select_stmt.h"
+#include "sql/parser/ob_parser.h"
+#include "lib/string/ob_string_buffer.h"
 #include "sql/resolver/dml/ob_update_resolver.h"
 #include "sql/resolver/dml/ob_delete_resolver.h"
 #include "sql/resolver/tcl/ob_start_trans_resolver.h"
@@ -60,6 +64,10 @@
 #include "sql/resolver/ddl/ob_set_comment_resolver.h"
 #include "sql/resolver/ddl/ob_lock_table_resolver.h"
 #include "sql/resolver/dml/ob_insert_resolver.h"
+#include "sql/resolver/dml/ob_select_resolver.h"
+#include "sql/resolver/dml/ob_select_stmt.h"
+#include "sql/parser/ob_parser.h"
+#include "lib/string/ob_string_buffer.h"
 #include "sql/resolver/dml/ob_update_resolver.h"
 #include "sql/resolver/dml/ob_delete_resolver.h"
 #include "sql/resolver/dcl/ob_create_user_resolver.h"
@@ -236,6 +244,14 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_SELECT: {
         REGISTER_SELECT_STMT_RESOLVER(Select);
+        break;
+      }
+      case T_DESCRIBE_SELECT: {
+        ret = resolve_describe_select(*real_parse_tree, stmt);
+        break;
+      }
+      case T_COPY_TO: {
+        ret = resolve_copy_to(*real_parse_tree, stmt);
         break;
       }
       case T_INSERT: {
@@ -682,5 +698,252 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
   return ret;
 }
 
+
+namespace
+{
+const char *describe_file_type_name(const ObObjType type)
+{
+  const char *name = "VARCHAR";
+  switch (type) {
+    case ObTinyIntType:
+      name = "BOOLEAN";
+      break;
+    case ObIntType:
+      name = "BIGINT";
+      break;
+    case ObDoubleType:
+      name = "DOUBLE";
+      break;
+    case ObDateType:
+      name = "DATE";
+      break;
+    case ObDateTimeType:
+      name = "DATETIME";
+      break;
+    case ObVarcharType:
+    default:
+      name = "VARCHAR";
+      break;
+  }
+  return name;
+}
+
+int append_escaped_name(ObStringBuffer &buffer, const ObString &name)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < name.length(); ++i) {
+    const char ch = name.ptr()[i];
+    if ('\'' == ch) {
+      ret = buffer.append("''");
+    } else {
+      ret = buffer.append(&ch, 1);
+    }
+  }
+  return ret;
+}
+}
+
+int ObResolver::resolve_describe_select(const ParseNode &parse_tree, ObStmt *&stmt)
+{
+  int ret = OB_SUCCESS;
+  stmt = nullptr;
+  const ParseNode *inner_node = nullptr;
+  ObSelectStmt *inner_stmt = nullptr;
+  ObStringBuffer sql(params_.allocator_);
+  if (OB_ISNULL(params_.allocator_) || OB_ISNULL(params_.session_info_)
+      || OB_ISNULL(parse_tree.children_) || OB_ISNULL(inner_node = parse_tree.children_[0])) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    ObSelectResolver inner_resolver(params_);
+    if (OB_FAIL(inner_resolver.resolve(*inner_node))) {
+    } else if (OB_ISNULL(inner_stmt = inner_resolver.get_select_stmt())) {
+      ret = OB_ERR_UNEXPECTED;
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(sql.append("select "))) {
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < inner_stmt->get_select_item_size(); ++i) {
+      const SelectItem &item = inner_stmt->get_select_item(i);
+      ObString column_name = item.alias_name_;
+      if (column_name.empty() && OB_NOT_NULL(item.expr_) && item.expr_->is_column_ref_expr()) {
+        column_name = static_cast<ObColumnRefRawExpr *>(item.expr_)->get_column_name();
+      }
+      if (column_name.empty()) {
+        column_name = item.expr_name_;
+      }
+      bool is_not_null = OB_NOT_NULL(item.expr_)
+                         && item.expr_->get_result_type().has_result_flag(NOT_NULL_FLAG);
+      const char *type_name = OB_ISNULL(item.expr_) ? "VARCHAR"
+                             : describe_file_type_name(item.expr_->get_result_type().get_type());
+      if (i > 0 && OB_FAIL(sql.append(" union all select "))) {
+      } else if (OB_FAIL(sql.append("'"))) {
+      } else if (OB_FAIL(append_escaped_name(sql, column_name))) {
+      } else {
+        char suffix[256];
+        const int len = snprintf(suffix, sizeof(suffix),
+                                 "' as column_name, '%s' as column_type, '%s' as `null`, "
+                                 "null as `key`, null as `default`, null as `extra`",
+                                 type_name, is_not_null ? "NO" : "YES");
+        if (len < 0 || len >= static_cast<int>(sizeof(suffix))) {
+          ret = OB_BUF_NOT_ENOUGH;
+        } else {
+          ret = sql.append(suffix, len);
+        }
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ParseResult parse_result;
+    ObParser parser(*params_.allocator_, params_.session_info_->get_sql_mode(),
+                    params_.session_info_->get_charsets4parser());
+    if (OB_FAIL(parser.parse(sql.string(), parse_result))) {
+    } else if (OB_ISNULL(parse_result.result_tree_)
+               || OB_ISNULL(parse_result.result_tree_->children_)
+               || OB_ISNULL(parse_result.result_tree_->children_[0])) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      ObSelectResolver select_resolver(params_);
+      select_resolver.set_calc_found_rows(false);
+      select_resolver.set_has_top_limit(false);
+      if (OB_FAIL(select_resolver.resolve(*parse_result.result_tree_->children_[0]))) {
+      } else {
+        stmt = select_resolver.get_basic_stmt();
+      }
+    }
+  }
+  return ret;
+}
+
+namespace
+{
+int collect_copy_options(const ParseNode *node,
+                         common::ObIArray<const ParseNode *> &options)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(node)) {
+  } else if (T_LINK_NODE == node->type_ && 2 == node->num_child_) {
+    if (OB_FAIL(SMART_CALL(collect_copy_options(node->children_[0], options)))) {
+    } else if (OB_FAIL(SMART_CALL(collect_copy_options(node->children_[1], options)))) {
+    }
+  } else if (OB_FAIL(options.push_back(node))) {
+  }
+  return ret;
+}
+}
+
+int ObResolver::resolve_copy_to(const ParseNode &parse_tree, ObStmt *&stmt)
+{
+  int ret = OB_SUCCESS;
+  stmt = nullptr;
+  const ParseNode *inner_node = nullptr;
+  const ParseNode *path_node = nullptr;
+  const ParseNode *option_node = nullptr;
+  ObSelectStmt *select_stmt = nullptr;
+  ObSelectIntoItem *into_item = nullptr;
+  char field_delim = ',';
+  char quote_char = '"';
+  bool with_header = false;
+  bool format_csv = true;
+  if (OB_ISNULL(params_.allocator_) || OB_ISNULL(params_.session_info_)
+      || OB_ISNULL(parse_tree.children_) || parse_tree.num_child_ < 2
+      || OB_ISNULL(inner_node = parse_tree.children_[0])
+      || OB_ISNULL(path_node = parse_tree.children_[1])) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(select_stmt = [&]() -> ObSelectStmt * {
+               ObSelectResolver resolver(params_);
+               return OB_SUCCESS == resolver.resolve(*inner_node) ? resolver.get_select_stmt() : nullptr;
+             }())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    ObSEArray<const ParseNode *, 8> options;
+    if (OB_FAIL(collect_copy_options(parse_tree.children_[2], options))) {
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < options.count(); ++i) {
+      option_node = options.at(i);
+      const ParseNode *name_node = option_node;
+      const ParseNode *value_node = nullptr;
+      if (T_COPY_OPTION == option_node->type_ && 2 == option_node->num_child_) {
+        name_node = option_node->children_[0];
+        value_node = option_node->children_[1];
+      }
+      if (OB_ISNULL(name_node) || OB_ISNULL(name_node->str_value_)) {
+        ret = OB_ERR_PARSE_SQL;
+      } else {
+        const ObString name(name_node->str_len_, name_node->str_value_);
+        if (0 == name.case_compare(ObString::make_string("header"))) {
+          if (OB_ISNULL(value_node)) {
+            with_header = true;
+          } else if (T_BOOL == value_node->type_) {
+            with_header = (0 != value_node->value_);
+          } else {
+            ret = OB_ERR_PARSE_SQL;
+          }
+        } else if (0 == name.case_compare(ObString::make_string("format"))) {
+          if (OB_ISNULL(value_node) || OB_ISNULL(value_node->str_value_)) {
+            ret = OB_ERR_PARSE_SQL;
+          } else {
+            const ObString format(value_node->str_len_, value_node->str_value_);
+            format_csv = (0 == format.case_compare(ObString::make_string("csv")));
+            if (!format_csv) {
+              ret = OB_NOT_SUPPORTED;
+              LOG_USER_ERROR(OB_NOT_SUPPORTED, "copy to format other than csv");
+            }
+          }
+        } else if (0 == name.case_compare(ObString::make_string("delimiter"))) {
+          if (OB_ISNULL(value_node) || T_VARCHAR != value_node->type_ || 1 != value_node->str_len_) {
+            ret = OB_ERR_PARSE_SQL;
+          } else {
+            field_delim = value_node->str_value_[0];
+          }
+        } else if (0 == name.case_compare(ObString::make_string("quote"))) {
+          if (OB_ISNULL(value_node) || T_VARCHAR != value_node->type_ || 1 != value_node->str_len_) {
+            ret = OB_ERR_PARSE_SQL;
+          } else {
+            quote_char = value_node->str_value_[0];
+          }
+        } else if (0 == name.case_compare(ObString::make_string("escape"))
+                   || 0 == name.case_compare(ObString::make_string("nullstr"))) {
+          // accepted but currently only CSV defaults are emitted
+        } else {
+          ret = OB_ERR_PARSE_SQL;
+        }
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(into_item = static_cast<ObSelectIntoItem *>(
+                         params_.allocator_->alloc(sizeof(ObSelectIntoItem))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    new (into_item) ObSelectIntoItem();
+    ObObj outfile_name;
+    outfile_name.set_varchar(ObString(path_node->str_len_, path_node->str_value_));
+    outfile_name.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+    into_item->into_type_ = T_INTO_OUTFILE;
+    into_item->outfile_name_ = outfile_name;
+    char *field_ptr = static_cast<char *>(params_.allocator_->alloc(1));
+    char *quote_ptr = static_cast<char *>(params_.allocator_->alloc(1));
+    char *line_ptr = static_cast<char *>(params_.allocator_->alloc(1));
+    if (OB_ISNULL(field_ptr) || OB_ISNULL(quote_ptr) || OB_ISNULL(line_ptr)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      field_ptr[0] = field_delim;
+      quote_ptr[0] = quote_char;
+      line_ptr[0] = '\n';
+      into_item->field_str_.set_varchar(field_ptr, 1);
+      into_item->field_str_.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      into_item->line_str_.set_varchar(line_ptr, 1);
+      into_item->line_str_.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      into_item->closed_cht_.set_char(ObString(1, quote_ptr));
+      into_item->closed_cht_.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      into_item->is_optional_ = false;
+      into_item->with_header_ = with_header;
+      select_stmt->set_select_into(into_item);
+      stmt = select_stmt;
+    }
+  }
+  return ret;
+}
 }  // namespace sql
 }  // namespace oceanbase

@@ -1927,6 +1927,257 @@ int ObSql::handle_ps_execute(const ObPsStmtId client_stmt_id,
   return ret;
 }
 
+
+namespace
+{
+bool ai_retry_is_ident_char(const char c)
+{
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+const char *ai_retry_find_token(const char *begin, const char *end, const char *token)
+{
+  const int64_t token_len = static_cast<int64_t>(strlen(token));
+  const char *p = begin;
+  while (p + token_len <= end) {
+    if (0 == strncasecmp(p, token, token_len)
+        && (p == begin || !ai_retry_is_ident_char(*(p - 1)))
+        && (p + token_len == end || !ai_retry_is_ident_char(*(p + token_len)))) {
+      return p;
+    }
+    ++p;
+  }
+  return nullptr;
+}
+
+int ai_retry_rewrite_status(ObSqlString &out, const char *begin, const char *end,
+                            const ObString &result_col)
+{
+  int ret = OB_SUCCESS;
+  const char *p = begin;
+  bool in_single = false;
+  bool in_double = false;
+  bool in_backtick = false;
+  while (OB_SUCC(ret) && p < end) {
+    const char c = *p;
+    if (in_single) {
+      if ('\\' == c && p + 1 < end) {
+        if (OB_FAIL(out.append(p, 2))) {}
+        p += 2;
+        continue;
+      }
+      if ('\'' == c) {
+        in_single = false;
+      }
+      if (OB_SUCC(ret) && OB_FAIL(out.append(&c, 1))) {}
+      ++p;
+    } else if (in_double) {
+      if ('"' == c) {
+        in_double = false;
+      }
+      if (OB_SUCC(ret) && OB_FAIL(out.append(&c, 1))) {}
+      ++p;
+    } else if (in_backtick) {
+      if ('`' == c) {
+        in_backtick = false;
+      }
+      if (OB_SUCC(ret) && OB_FAIL(out.append(&c, 1))) {}
+      ++p;
+    } else if ('\'' == c) {
+      in_single = true;
+      if (OB_FAIL(out.append(&c, 1))) {}
+      ++p;
+    } else if ('"' == c) {
+      in_double = true;
+      if (OB_FAIL(out.append(&c, 1))) {}
+      ++p;
+    } else if ('`' == c) {
+      in_backtick = true;
+      if (OB_FAIL(out.append(&c, 1))) {}
+      ++p;
+    } else if (0 == strncasecmp(p, "status", 6) && (p == begin || !ai_retry_is_ident_char(*(p - 1)))
+               && (p + 6 == end || !ai_retry_is_ident_char(*(p + 6)))) {
+      if (OB_FAIL(out.append_fmt(
+              "CASE WHEN `%.*s` IS NOT NULL THEN 'READY' WHEN `__ai_%.*s_rq` IS NULL "
+              "THEN 'FAILED' ELSE 'PENDING' END",
+              result_col.length(), result_col.ptr(), result_col.length(), result_col.ptr()))) {
+      }
+      p += 6;
+    } else if (OB_FAIL(out.append(&c, 1))) {
+    } else {
+      ++p;
+    }
+  }
+  return ret;
+}
+} // namespace
+
+int ObSql::maybe_rewrite_ai_column_retry(const ObString &stmt, ObIAllocator &alloc,
+                                         const ObString &current_db,
+                                         ObString &rewritten, bool &changed)
+{
+  int ret = OB_SUCCESS;
+  changed = false;
+  const char *begin = stmt.ptr();
+  const char *end = stmt.ptr() + stmt.length();
+  const char *alter = ai_retry_find_token(begin, end, "alter");
+  const char *retry = ai_retry_find_token(begin, end, "retry");
+  const char *ai = ai_retry_find_token(begin, end, "ai");
+  const char *column_kw = ai_retry_find_token(begin, end, "column");
+  if (OB_ISNULL(begin) || OB_ISNULL(alter) || OB_ISNULL(retry) || OB_ISNULL(ai)
+      || OB_ISNULL(column_kw) || retry < alter || ai < retry || column_kw < ai) {
+    // Not an ALTER ... RETRY AI COLUMN statement.
+  } else {
+    const char *p = alter + 5;
+    while (p < retry && (' ' == *p || '\t' == *p || '\n' == *p)) {
+      ++p;
+    }
+    const char *table_kw = ai_retry_find_token(p, retry, "table");
+    if (OB_ISNULL(table_kw) || table_kw >= retry) {
+      // Not an ALTER TABLE statement.
+    } else {
+      const char *table_begin = table_kw + 5;
+      while (table_begin < retry && (' ' == *table_begin || '\t' == *table_begin || '\n' == *table_begin)) {
+        ++table_begin;
+      }
+      const char *table_end = retry;
+      while (table_end > table_begin
+             && (' ' == table_end[-1] || '\t' == table_end[-1] || '\n' == table_end[-1])) {
+        --table_end;
+      }
+      const char *col_begin = column_kw + 6;
+      while (col_begin < end && (' ' == *col_begin || '\t' == *col_begin || '\n' == *col_begin)) {
+        ++col_begin;
+      }
+      const char *col_end = col_begin;
+      if (col_end < end && '`' == *col_end) {
+        ++col_end;
+        while (col_end < end && '`' != *col_end) {
+          ++col_end;
+        }
+        if (col_end < end) {
+          ++col_end;
+        }
+      } else {
+        while (col_end < end && ai_retry_is_ident_char(*col_end)) {
+          ++col_end;
+        }
+      }
+      ObString table_ref(static_cast<int32_t>(table_end - table_begin), const_cast<char *>(table_begin));
+      ObString column_ref(static_cast<int32_t>(col_end - col_begin), const_cast<char *>(col_begin));
+      ObString column_name = column_ref;
+      if (column_name.length() >= 2 && '`' == column_name.ptr()[0]) {
+        column_name.assign_ptr(column_name.ptr() + 1, column_name.length() - 2);
+      }
+      // Split database and table name.
+      ObString db_name;
+      ObString table_name = table_ref;
+      const char *dot = nullptr;
+      for (const char *q = table_ref.ptr(); q < table_ref.ptr() + table_ref.length(); ++q) {
+        if ('.' == *q) {
+          dot = q;
+          break;
+        }
+      }
+      if (OB_NOT_NULL(dot)) {
+        db_name.assign_ptr(table_ref.ptr(), static_cast<int32_t>(dot - table_ref.ptr()));
+        table_name.assign_ptr(dot + 1, static_cast<int32_t>(table_ref.ptr() + table_ref.length() - dot - 1));
+      }
+      ObString db_clean = db_name;
+      ObString table_clean = table_name;
+      if (db_clean.length() >= 2 && '`' == db_clean.ptr()[0]) {
+        db_clean.assign_ptr(db_clean.ptr() + 1, db_clean.length() - 2);
+      }
+      if (table_clean.length() >= 2 && '`' == table_clean.ptr()[0]) {
+        table_clean.assign_ptr(table_clean.ptr() + 1, table_clean.length() - 2);
+      }
+      ObSchemaGetterGuard guard;
+      const ObTableSchema *table_schema = nullptr;
+      int tmp_ret = OB_SUCCESS;
+      if (OB_ISNULL(GCTX.schema_service_)) {
+        tmp_ret = OB_NOT_INIT;
+      } else if (OB_SUCCESS != (tmp_ret = GCTX.schema_service_->get_runtime_schema_guard(guard))) {
+      } else {
+        const ObString &schema_name = db_clean.empty() ? current_db : db_clean;
+        if (schema_name.empty()) {
+          tmp_ret = OB_INVALID_ARGUMENT;
+        } else {
+          tmp_ret = guard.get_table_schema(schema_name, table_clean, false, table_schema);
+        }
+      }
+      const ObColumnSchemaV2 *col = nullptr;
+      if (OB_SUCCESS != tmp_ret || OB_ISNULL(table_schema)
+          || OB_ISNULL(col = table_schema->get_column_schema(column_name))
+          || !col->is_ai_column()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "retrying a column that is not an AI column");
+      } else {
+        const char *where_pos = ai_retry_find_token(col_end, end, "where");
+        // A top level comma means another ALTER action is mixed in.
+        bool combined = false;
+        int64_t depth = 0;
+        bool in_str = false;
+        bool in_bt = false;
+        for (const char *q = col_end; q < end; ++q) {
+          const char c = *q;
+          if (in_str) {
+            if ('\\' == c) {
+              ++q;
+            } else if ('\'' == c) {
+              in_str = false;
+            }
+          } else if (in_bt) {
+            if ('`' == c) {
+              in_bt = false;
+            }
+          } else if ('\'' == c) {
+            in_str = true;
+          } else if ('`' == c) {
+            in_bt = true;
+          } else if ('(' == c) {
+            ++depth;
+          } else if (')' == c) {
+            --depth;
+          } else if (',' == c && 0 == depth) {
+            combined = true;
+            break;
+          }
+        }
+        if (combined) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "combining AI COLUMN RETRY with another ALTER action");
+        } else {
+          ObSqlString sql;
+          if (OB_FAIL(sql.append_fmt("UPDATE %.*s SET %.*s = NULL",
+                                     table_ref.length(), table_ref.ptr(),
+                                     column_ref.length(), column_ref.ptr()))) {
+          } else if (OB_NOT_NULL(where_pos)) {
+            const char *where_begin = where_pos + 5;
+            const char *where_end = end;
+            while (where_end > where_begin && (';' == where_end[-1] || ' ' == where_end[-1]
+                                               || '\t' == where_end[-1] || '\n' == where_end[-1])) {
+              --where_end;
+            }
+            if (OB_FAIL(sql.append(" WHERE "))) {
+            } else if (OB_FAIL(ai_retry_rewrite_status(sql, where_begin, where_end, column_name))) {
+            }
+          }
+          char *buf = nullptr;
+          if (OB_FAIL(ret)) {
+          } else if (OB_ISNULL(buf = static_cast<char *>(alloc.alloc(sql.length())))) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+          } else {
+            MEMCPY(buf, sql.ptr(), sql.length());
+            rewritten.assign_ptr(buf, sql.length());
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 OB_INLINE int ObSql::handle_text_query(const ObString &stmt, ObSqlCtx &context, ObResultSet &result)
 {
   int ret = OB_SUCCESS;
@@ -1944,6 +2195,18 @@ OB_INLINE int ObSql::handle_text_query(const ObString &stmt, ObSqlCtx &context, 
 
   ObIAllocator &allocator = THIS_WORKER.get_sql_arena_allocator();
   ObSQLSessionInfo &session = result.get_session();
+  {
+    ObString rewritten;
+    bool changed = false;
+    if (OB_SUCC(ret) && OB_FAIL(ObSql::maybe_rewrite_ai_column_retry(trimed_stmt, allocator,
+                                                                     session.get_database_name(),
+                                                                     rewritten, changed))) {
+      result.get_exec_context().set_need_disconnect(false);
+    } else if (OB_SUCC(ret) && changed) {
+      trimed_stmt = rewritten;
+      context.cur_sql_ = trimed_stmt;
+    }
+  }
   
   ObExecContext& ectx = result.get_exec_context();
   int get_plan_err = OB_SUCCESS; //used for judge whether add plan to plan cache

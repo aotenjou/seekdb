@@ -10975,5 +10975,31 @@
     "info_cn": "",
     "background_cn": "",
     "ref_url": ""
+  },
+  "ai_column_strict_read": {
+    "id": 10755,
+    "name": "ai_column_strict_read",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "reject reads of AI columns that still have unfinished rows",
+    "flags": "SESSION | GLOBAL | INFLUENCE_PLAN",
+    "publish_version": "2026-competition",
+    "info_cn": "AI 列未全部就绪时拒绝读取",
+    "background_cn": "默认关闭",
+    "ref_url": ""
+  },
+  "enable_file_sql": {
+    "id": 10754,
+    "name": "enable_file_sql",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "enable SQL table functions for reading local files",
+    "flags": "SESSION | GLOBAL | INFLUENCE_PLAN",
+    "publish_version": "2026-competition",
+    "info_cn": "启用通过 SQL 查询本地文件",
+    "background_cn": "默认关闭，文件访问仍受 secure_file_priv 限制",
+    "ref_url": ""
   }
 }

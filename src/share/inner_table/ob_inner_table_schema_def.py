@@ -2441,10 +2441,15 @@ all_ai_model_endpoint_def = dict(
         ('request_model_name', 'varchar:128', 'true'),
         ('parameters', 'varchar:2048', 'true'),
         ('request_transform_fn', 'varchar:64', 'true'),
-        ('response_transform_fn', 'varchar:64', 'true')
+        ('response_transform_fn', 'varchar:64', 'true'),
+        ('max_concurrency', 'int', 'false', '8')
     ]
 )
 def_table_schema(**all_ai_model_endpoint_def)
+
+
+
+
 
 
 all_objauth_mysql_def = dict(
@@ -2499,6 +2504,7 @@ def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
 #       * # 100001: idx_data_table_id
 #       * # 100001: __all_table
 ################################################################################
+
 
 
 ################################################################################
@@ -6383,6 +6389,56 @@ def_table_schema(
     ('fetch_lsn', 'int'),
     ('fetch_scn', 'int'),
   ],
+)
+
+
+# 12565: __all_ai_column
+def_table_schema(
+  owner = 'database-competition',
+  table_name     = '__all_ai_column',
+  table_id       = '12565',
+  table_type = 'VIRTUAL_TABLE',
+  gm_columns = [],
+  rowkey_columns = [
+  ('table_id', 'int'),
+  ('column_id', 'int')
+  ],
+  normal_columns = [
+  ('column_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH'),
+  ('normalized_expr', 'varchar:4096'),
+  ('max_retries', 'int'),
+  ('sync_mode', 'varchar:16'),
+  ('state_column_id', 'int'),
+  ('request_column_id', 'int'),
+  ('result_spec_column_id', 'int'),
+  ('definition_version', 'int')
+  ]
+)
+
+# 12567: __all_ai_column_task
+def_table_schema(
+  owner = 'database-competition',
+  table_name     = '__all_ai_column_task',
+  table_id       = '12567',
+  table_type = 'VIRTUAL_TABLE',
+  gm_columns = [],
+  rowkey_columns = [
+  ('table_id', 'int'),
+  ('rowkey_predicate', 'varchar:256'),
+  ('column_id', 'int')
+  ],
+  normal_columns = [
+  ('request_id', 'varchar:64'),
+  ('state', 'int'),
+  ('retry_count', 'int'),
+  ('eligible_ts', 'timestamp'),
+  ('model_name', 'varchar:128'),
+  ('prompt_expr', 'varchar:4096'),
+  ('instruction', 'varchar:256'),
+  ('result_type', 'int'),
+  ('max_retries', 'int'),
+  ('definition_version', 'int')
+  ]
 )
 
 # Reserved position (placeholder before this line)
@@ -13819,7 +13875,8 @@ def_table_schema(
       REQUEST_MODEL_NAME,
       PARAMETERS,
       REQUEST_TRANSFORM_FN,
-      RESPONSE_TRANSFORM_FN
+      RESPONSE_TRANSFORM_FN,
+      MAX_CONCURRENCY
     FROM oceanbase.__all_ai_model_endpoint WHERE ENDPOINT_ID != -1;
   """.replace("\n", " ")
 )

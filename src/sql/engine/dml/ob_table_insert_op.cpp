@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "config_bridge.h"
+#include "sql/engine/dml/ob_ai_column_dml_helper.h"
 #include "sql/engine/dml/ob_table_insert_op.h"
 #include "sql/engine/dml/ob_dml_service.h"
 
@@ -226,6 +227,12 @@ OB_INLINE int ObTableInsertOp::insert_row_to_das()
                                                                 tablet_loc->tablet_id_,
                                                                 eval_ctx_))) {
       } else if (OB_FAIL(ObDMLService::insert_row(ins_ctdef, ins_rtdef, tablet_loc, dml_rtctx_, modify_row.new_row_))) {
+      } else if (ins_ctdef.is_primary_index_ && ins_ctdef.das_ctdef_.is_access_main_table_
+                 && OB_FAIL(ObAiColumnDmlHelper::record_row(*this, ins_ctdef.das_ctdef_.index_tid_,
+                                                            ins_ctdef.das_ctdef_.column_ids_,
+                                                            modify_row.new_row_,
+                                                            ObAiColumnDmlHelper::AI_EVENT_INSERT,
+                                                            nullptr, nullptr))) {
       } else if (need_after_row_process(ins_ctdef) && OB_FAIL(dml_modify_rows_.push_back(modify_row))) {
       }
       if (OB_FAIL(ret)) {
@@ -254,6 +261,8 @@ OB_INLINE int ObTableInsertOp::insert_row_to_das()
 int ObTableInsertOp::write_rows_post_proc(int last_errno)
 {
   int ret = last_errno;
+  if (iter_end_ && OB_SUCC(ret) && OB_FAIL(ObAiColumnDmlHelper::flush(*this))) {
+  }
   if (iter_end_) {
     ObPhysicalPlanCtx *plan_ctx = GET_PHY_PLAN_CTX(ctx_);
     if (OB_ERR_PRIMARY_KEY_DUPLICATE == ret) {

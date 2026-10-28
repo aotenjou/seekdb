@@ -1726,6 +1726,9 @@ stmt::StmtType ObResolverUtils::get_stmt_type_by_item_type(const ObItemType item
       SET_STMT_TYPE(T_DIAGNOSTICS);
       // read only
       SET_STMT_TYPE(T_EXPLAIN);
+      case T_DESCRIBE_SELECT: {
+        type = stmt::T_SELECT;
+      } break;
       SET_STMT_TYPE(T_SHOW_COLUMNS);
       SET_STMT_TYPE(T_SHOW_TABLES);
       SET_STMT_TYPE(T_SHOW_DATABASES);

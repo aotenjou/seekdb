@@ -950,6 +950,8 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       } else if (OB_FAIL(resolve_primary_key_node_in_heap_table(primary_node_in_heap_table, stats, resolved_cols))) {
       }
     }
+    if (OB_SUCC(ret) && OB_FAIL(finalize_ai_columns(table_schema))) {
+    }
   }
   return ret;
 }

@@ -24,6 +24,7 @@
 #include "lib/ob_errno.h"
 #include "lib/oblog/ob_log_module.h"
 #include "lib/string/ob_string.h"
+#include <string>
 #include "lib/utility/ob_macro_utils.h"
 #include "object/ob_object.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -84,14 +85,18 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
   storage::ObFTParseHelper tokenize_helper;
   const int64_t ft_word_bkt_cnt = MIN(MAX(param.fulltext_.length() / 2, 2), 997);
   int64_t doc_len = 0;
-  storage::ObFTWordMap token_map;
-
-  ObArenaAllocator tmp_parse_alloc(ObMemAttr("Tmp buffer"));
+  // TOKENIZE runs once per row in many FTS workloads. Retain the hash map's
+  // node-block allocator on this worker thread while recreating the bucket
+  // array with the same input-dependent size used by the original path.
+  static thread_local storage::ObFTWordMap token_map;
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (token_map.created() && token_map.bucket_count() != ft_word_bkt_cnt
+             && OB_FAIL(token_map.destroy())) {
+  } else if (!token_map.created()
+             && OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
-  } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (
       (0 != param.fulltext_.length())
       && OB_FAIL(tokenize_helper.segment(
@@ -118,6 +123,17 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
     }
     default:
       ret = OB_INVALID_ARGUMENT;
+    }
+  }
+  // Destroying the table releases its bucket array and returns its nodes to
+  // the thread-local block allocator. No key points into a later evaluation.
+  if (token_map.created()) {
+    int destroy_ret = token_map.destroy();
+    if (OB_SUCCESS != destroy_ret) {
+      LOG_WARN("failed to destroy thread-local FTS token map", K(destroy_ret));
+      if (OB_SUCC(ret)) {
+        ret = destroy_ret;
+      }
     }
   }
   return ret;
@@ -376,6 +392,18 @@ int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &prop
 {
   int ret = OB_SUCCESS;
   storage::ObFTParserJsonProps parser_properties;
+  // The common TOKENIZE form has no explicit properties; the rebuilt default
+  // JSON only depends on the (normalized) parser name, so cache it per thread.
+  static thread_local std::string cached_key;
+  static thread_local std::string cached_properties;
+  if (properties.empty()) {
+    const std::string key(parser_name_.ptr(), parser_name_.length());
+    if (key == cached_key && !cached_properties.empty()) {
+      properties_.assign_ptr(cached_properties.data(),
+                             static_cast<int32_t>(cached_properties.size()));
+      return ret;
+    }
+  }
 
   if (OB_FAIL(parser_properties.init())) {
   } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
@@ -384,6 +412,9 @@ int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &prop
                                                              ObCollationType::CS_TYPE_UTF8MB4_BIN,
                                                              true))) {
   } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+  } else if (properties.empty()) {
+    cached_key.assign(parser_name_.ptr(), parser_name_.length());
+    cached_properties.assign(properties_.ptr(), properties_.length());
   }
 
   return ret;

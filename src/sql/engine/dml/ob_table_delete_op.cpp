@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "config_bridge.h"
+#include "sql/engine/dml/ob_ai_column_dml_helper.h"
 #include "sql/engine/dml/ob_table_delete_op.h"
 #include "sql/engine/dml/ob_dml_service.h"
 
@@ -248,6 +249,12 @@ OB_INLINE int ObTableDeleteOp::delete_row_to_das()
         break;
       } else if (OB_FAIL(calc_tablet_loc(del_ctdef, del_rtdef, tablet_loc))) {
       } else if (OB_FAIL(ObDMLService::delete_row(del_ctdef, del_rtdef, tablet_loc, dml_rtctx_, modify_row.old_row_))) {
+      } else if (del_ctdef.is_primary_index_ && del_ctdef.das_ctdef_.is_access_main_table_
+                 && OB_FAIL(ObAiColumnDmlHelper::record_row(*this, del_ctdef.das_ctdef_.index_tid_,
+                                                            del_ctdef.column_ids_,
+                                                            del_ctdef.old_row_,
+                                                            ObAiColumnDmlHelper::AI_EVENT_DELETE,
+                                                            nullptr, nullptr))) {
       } else if (need_after_row_process(del_ctdef) && OB_FAIL(dml_modify_rows_.push_back(modify_row))) {
       } else {
         ++del_rtdef.cur_row_num_;
@@ -266,6 +273,8 @@ OB_INLINE int ObTableDeleteOp::delete_row_to_das()
 int ObTableDeleteOp::write_rows_post_proc(int last_errno)
 {
   int ret = last_errno;
+  if (iter_end_ && OB_SUCC(ret) && OB_FAIL(ObAiColumnDmlHelper::flush(*this))) {
+  }
   if (iter_end_) {
     ObPhysicalPlanCtx *plan_ctx = GET_PHY_PLAN_CTX(ctx_);
     for (int64_t i = 0; OB_SUCC(ret) && i < del_rtdefs_.count(); ++i) {

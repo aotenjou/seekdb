@@ -77,7 +77,7 @@ int ObAIFuncClient::init(common::ObIAllocator &allocator, const common::ObString
 {
   int ret = OB_SUCCESS;
   int64_t remain_timeout_us = THIS_WORKER.is_timeout_ts_valid() ? THIS_WORKER.get_timeout_remain() : timeout_sec_ * 1000000;
-  if (OB_ISNULL(url) || headers.empty()) {
+  if (url.empty()) {
     ret = OB_INVALID_ARGUMENT;
   } else {
     allocator_ = &allocator;
@@ -171,7 +171,7 @@ int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
         ret = OB_CURL_ERROR;
         char http_code_str[1024];
         ObString err_msg = response_buf.string();
-        snprintf(http_code_str, sizeof(http_code_str), "http status code: %ld, error message: %s", http_code, err_msg.ptr());
+        snprintf(http_code_str, sizeof(http_code_str), "http status code: %ld, error message: %.*s", http_code, err_msg.length(), err_msg.ptr());
         ObString ob_http_code_str(http_code_str);
         FORWARD_USER_ERROR(ret, http_code_str);
       }
@@ -182,6 +182,8 @@ int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
               allocator_, response_buf.string(), ObJsonInType::JSON_TREE,
               ObJsonInType::JSON_TREE, j_tree))) {
           ret = OB_ERR_INVALID_JSON_TEXT;
+        } else if (OB_ISNULL(j_tree) || j_tree->json_type() != ObJsonNodeType::J_OBJECT) {
+          ret = OB_INVALID_DATA;
         } else {
           response = static_cast<ObJsonObject *>(j_tree);
         }

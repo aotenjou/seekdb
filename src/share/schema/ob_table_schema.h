@@ -1095,6 +1095,7 @@ public:
                                      const bool only_hidden_column,
                                      share::schema::ObColumnSchemaV2 *&gen_col);
   void get_column_name_by_column_id(const uint64_t column_id, common::ObString &column_name, bool &is_column_exist) const;
+  bool has_ai_column() const;
   const ObColumnSchemaV2 *get_column_schema(const uint64_t column_id) const;
   const ObColumnSchemaV2 *get_column_schema(const char *column_name) const;
   const ObColumnSchemaV2 *get_column_schema(const common::ObString &column_name) const;

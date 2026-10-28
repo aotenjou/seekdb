@@ -2,6 +2,7 @@
 
 OBSERVER_PRIVATE_HEADERS = [
     "ai_service/ob_ai_service_executor.h",
+    "ai_service/ob_ai_column_worker.h",
     "ai_service/ob_ai_service_proxy.h",
     "change_stream/ob_change_stream_dispatcher.h",
     "change_stream/ob_change_stream_fetcher.h",
@@ -238,6 +239,8 @@ OBSERVER_PRIVATE_HEADERS = [
     "scheduler/ob_ddl_count_guard.h",
     "vector_index/ob_vector_index_async_task_scheduler.h",
     "virtual_table/ob_all_virtual_charset.h",
+    "virtual_table/ob_all_ai_column.h",
+    "virtual_table/ob_all_ai_column_task.h",
     "virtual_table/ob_all_virtual_collation.h",
     "virtual_table/ob_all_virtual_concurrent_limit_sql.h",
     "virtual_table/ob_all_virtual_ctx_memory_info.h",

@@ -49,6 +49,14 @@ enum MulModeTableType {
   OB_UNNEST_TABLE_TYPE = 3,
 };
 
+enum FileTableType {
+  FILE_TABLE_NONE = 0,
+  FILE_TABLE_CSV,
+  FILE_TABLE_JSON,
+  FILE_TABLE_PARQUET,
+  FILE_TABLE_GLOB,
+};
+
 typedef struct ObJtColBaseInfo
 {
   ObJtColBaseInfo();
@@ -150,6 +158,28 @@ struct TableItem
     snapshot_query_expr_ = nullptr;
     snapshot_query_type_ = SnapshotQueryType::NOT_USING;
     function_table_expr_ = nullptr;
+    file_table_type_ = FILE_TABLE_NONE;
+    file_table_column_count_ = 0;
+    file_table_header_ = true;
+    file_table_field_delim_ = ',';
+    file_table_quote_ = '"';
+    file_table_escape_ = 0;
+    file_table_null_str_.reset();
+    file_table_size_ = 0;
+    file_table_mtime_ns_ = 0;
+    file_table_dev_ = 0;
+    file_table_ino_ = 0;
+    file_table_type_ = FILE_TABLE_NONE;
+    file_table_column_count_ = 0;
+    file_table_header_ = true;
+    file_table_field_delim_ = ',';
+    file_table_quote_ = '"';
+    file_table_escape_ = 0;
+    file_table_null_str_.reset();
+    file_table_size_ = 0;
+    file_table_mtime_ns_ = 0;
+    file_table_dev_ = 0;
+    file_table_ino_ = 0;
     ddl_schema_version_ = 0;
     ddl_table_id_ = common::OB_INVALID_ID;
     json_table_def_ = nullptr;
@@ -293,6 +323,17 @@ struct TableItem
   ObRawExpr *snapshot_query_expr_;
   SnapshotQueryType snapshot_query_type_;
   ObRawExpr *function_table_expr_;
+  FileTableType file_table_type_;
+  int64_t file_table_column_count_;
+  bool file_table_header_;
+  char file_table_field_delim_;
+  char file_table_quote_;
+  char file_table_escape_;
+  common::ObString file_table_null_str_;
+  int64_t file_table_size_;
+  int64_t file_table_mtime_ns_;
+  int64_t file_table_dev_;
+  int64_t file_table_ino_;
   int64_t ddl_schema_version_;
   int64_t ddl_table_id_;
   // table partition

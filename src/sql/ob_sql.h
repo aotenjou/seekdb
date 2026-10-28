@@ -566,6 +566,11 @@ private:
   volatile int64_t execution_id_ CACHE_ALIGNED;
   volatile uint64_t px_sequence_id_;
   ObMaintainDepInfoTaskQueue queue_;
+  static int maybe_rewrite_ai_column_retry(const common::ObString &stmt,
+                                           common::ObIAllocator &alloc,
+                                           const common::ObString &current_db,
+                                           common::ObString &rewritten,
+                                           bool &changed);
 };
 } // end namespace sql
 } // end namespace oceanbase
