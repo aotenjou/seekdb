@@ -240,17 +240,6 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
   return ret;
 }
 
-namespace {
-struct AddWordCount {
-public:
-  explicit AddWordCount(const int64_t freq) : freq_(freq) {}
-  template <typename Pair>
-  void operator()(Pair &pair) { pair.second += freq_; }
-private:
-  int64_t freq_;
-};
-} // namespace
-
 int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
 {
   int ret = OB_SUCCESS;
@@ -260,11 +249,13 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
   } else if (tokenize_mode_) {
-    // TOKENIZE repeatedly aggregates the same words. Insert with the original
-    // first-occurrence count or update the existing node in place, so the hot
-    // path performs one hash lookup instead of get + set.
-    AddWordCount add_count(word_freq);
-    if (OB_FAIL(word_map_.set_or_update(word, 1/*word count*/, add_count))) {
+    // TOKENIZE's map is owned by the current evaluator thread. Update an
+    // existing value directly so the common path avoids pair construction and
+    // the write lock used by set_or_update().
+    int64_t *word_count = word_map_.get(word);
+    if (OB_NOT_NULL(word_count)) {
+      *word_count += word_freq;
+    } else if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
   } else {
     int64_t word_count = 0;
