@@ -210,12 +210,26 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
              && (!tokenize_mode_
                  || needs_casedown(src.get_word().get_string(), word_meta_.get_collation_type()))) {
     ObString dst_str;
-    if (OB_FAIL(ObCharset::tolower(
-                    word_meta_.get_collation_type(),
-                    src.get_word().get_string(),
-                    dst_str,
-                    allocator_))) {
-    } else {
+    const ObString src_str = src.get_word().get_string();
+    bool ascii_only = tokenize_mode_;
+    for (int64_t i = 0; ascii_only && i < src_str.length(); ++i) {
+      ascii_only = static_cast<unsigned char>(src_str.ptr()[i]) < 0x80;
+    }
+    if (ascii_only) {
+      char *buf = static_cast<char *>(allocator_.alloc(src_str.length()));
+      if (OB_ISNULL(buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        for (int64_t i = 0; i < src_str.length(); ++i) {
+          const unsigned char ch = static_cast<unsigned char>(src_str.ptr()[i]);
+          buf[i] = static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
+        }
+        dst_str.assign_ptr(buf, src_str.length());
+      }
+    } else if (OB_FAIL(ObCharset::tolower(
+                           word_meta_.get_collation_type(), src_str, dst_str, allocator_))) {
+    }
+    if (OB_SUCC(ret)) {
       ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
       dst = tmp;
     }
