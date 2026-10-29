@@ -44,6 +44,7 @@ public:
 protected:
   virtual int pre_process(); // should set partition_cnt_, among other things
   virtual int init_chunk_stores();
+  virtual int fill_direct_filter_map();
   virtual int fill_chunk_stores();
   virtual int load_next_hash_map();
   virtual int project_results(const int64_t safe_capacity, int64_t &count);
@@ -66,6 +67,7 @@ protected:
   ObDocIdExt cache_first_id_;
   bool are_chunk_stores_inited_;
   bool are_chunk_stores_filled_;
+  bool direct_filter_mode_;
   void (*set_datum_func_)(ObDatum &, const ObDocIdExt &);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSRTaaTIterImpl);

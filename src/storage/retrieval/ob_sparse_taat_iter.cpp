@@ -39,6 +39,7 @@ ObSRTaaTIterImpl::ObSRTaaTIterImpl()
     cache_first_id_(),
     are_chunk_stores_inited_(false),
     are_chunk_stores_filled_(false),
+    direct_filter_mode_(false),
     set_datum_func_(nullptr)
 {
 }
@@ -64,6 +65,9 @@ int ObSRTaaTIterImpl::init(
     } else {
       set_datum_func_ = ObISparseRetrievalMergeIter::set_datum_shallow;
     }
+    direct_filter_mode_ = !iter_param_->need_project_relevance()
+        && !iter_param_->need_filter()
+        && !iter_param_->need_pushdown_topk();
     is_inited_ = true;
   }
   return ret;
@@ -103,6 +107,7 @@ void ObSRTaaTIterImpl::reuse(const bool switch_tablet)
   cache_first_id_.reset();
   are_chunk_stores_inited_ = false;
   are_chunk_stores_filled_ = false;
+  direct_filter_mode_ = false;
   input_row_cnt_ = 0;
   output_row_cnt_ = 0;
 }
@@ -139,7 +144,10 @@ int ObSRTaaTIterImpl::get_next_rows(const int64_t capacity, int64_t &count)
   } else if (OB_UNLIKELY(0 == partition_cnt_)) {
     ret = OB_ITER_END;
   } else if (!are_chunk_stores_inited_ && OB_FAIL(init_chunk_stores())) {
-  } else if (!are_chunk_stores_filled_ && OB_FAIL(fill_chunk_stores())) {
+  } else if (!are_chunk_stores_filled_ && direct_filter_mode_
+             && OB_FAIL(fill_direct_filter_map())) {
+  } else if (!are_chunk_stores_filled_ && !direct_filter_mode_
+             && OB_FAIL(fill_chunk_stores())) {
   } else if (cur_map_idx_ > partition_cnt_) {
     ret = OB_ERR_UNEXPECTED;
   } else {
@@ -156,6 +164,8 @@ int ObSRTaaTIterImpl::get_next_rows(const int64_t capacity, int64_t &count)
           && *cur_map_iter_ != hash_maps_[cur_map_idx_]->end()) {
         if (OB_FAIL(project_results(real_capacity, count))) {
         }
+      } else if (direct_filter_mode_) {
+        ret = OB_ITER_END;
       } else if (OB_FAIL(load_next_hash_map())) {
         if (OB_ITER_END != ret) {
         }
@@ -166,6 +176,71 @@ int ObSRTaaTIterImpl::get_next_rows(const int64_t capacity, int64_t &count)
       ObEvalCtx *eval_ctx = iter_param_->eval_ctx_;
       ObDatum &id_datum = iter_param_->id_proj_expr_->locate_expr_datum(*eval_ctx, 0);
       set_datum_func_(id_datum, cache_first_id_);
+    }
+  }
+  return ret;
+}
+
+int ObSRTaaTIterImpl::fill_direct_filter_map()
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!are_chunk_stores_inited_ || partition_cnt_ != 1
+                  || OB_ISNULL(dim_iter_) || OB_ISNULL(hash_maps_))) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    ObSRTaaTHashMap *map = hash_maps_[0];
+    const int64_t capacity = OB_MAX(iter_param_->max_batch_size_, 1);
+    ObEvalCtx *eval_ctx = iter_param_->eval_ctx_;
+    for (int64_t dim_idx = 0; OB_SUCC(ret); ++dim_idx) {
+      int64_t count = 0;
+      while (OB_SUCC(ret)) {
+        int64_t batch_count = 0;
+        if (OB_FAIL(dim_iter_->get_next_batch(capacity, batch_count))) {
+          if (OB_UNLIKELY(OB_ITER_END != ret)) {
+          } else if (batch_count > 0) {
+            ret = OB_SUCCESS;
+          }
+        }
+        if (OB_SUCC(ret)) {
+          count += batch_count;
+          for (int64_t i = 0; OB_SUCC(ret) && i < batch_count; ++i) {
+            ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
+            guard.set_batch_idx(i);
+            ObDocIdExt id;
+            const ObDatum &id_datum = iter_param_->id_proj_expr_->locate_expr_datum(*eval_ctx, i);
+            if (OB_FAIL(id.from_datum(id_datum))) {
+            } else {
+              const int hash_ret = map->set_refactored(id, 1.0, 1 /* overwrite */);
+              if (OB_HASH_EXIST == hash_ret) {
+                ret = OB_SUCCESS;
+              } else if (OB_FAIL(hash_ret)) {
+              }
+            }
+          }
+        }
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          break;
+        }
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(update_dim_iter(dim_idx + 1))) {
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          break;
+        }
+      }
+      eval_ctx->reuse(eval_ctx->get_batch_size());
+    }
+    if (OB_SUCC(ret)) {
+      cur_map_idx_ = 0;
+      void *buf = nullptr;
+      if (OB_ISNULL(buf = iter_allocator_->alloc(sizeof(ObSRTaaTHashMap::iterator)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        cur_map_iter_ = new (buf) ObSRTaaTHashMap::iterator(map->begin());
+        are_chunk_stores_filled_ = true;
+      }
     }
   }
   return ret;
@@ -405,7 +480,12 @@ int ObSRTaaTIterImpl::load_next_hash_map()
           } else if (OB_FAIL(map->set_refactored(id, cur_relevance + last_relevance, 1 /* overwrite */))) {
           }
         } else {
-          if (OB_FAIL(map->set_refactored(id, 1.0, 0 /* overwrite */))) {
+          // A filter-only MATCH still merges postings from multiple tokens;
+          // duplicate document ids must be coalesced in the hash map.
+          const int hash_ret = map->set_refactored(id, 1.0, 1 /* overwrite */);
+          if (OB_HASH_EXIST == hash_ret) {
+            ret = OB_SUCCESS;
+          } else if (OB_FAIL(hash_ret)) {
           }
         }
       }

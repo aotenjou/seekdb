@@ -12858,6 +12858,34 @@ int ObTransformUtils::inner_check_need_calc_match_score(ObExecContext *exec_ctx,
   return ret;
 }
 
+int ObTransformUtils::check_need_calc_match_score(ObExecContext *exec_ctx,
+                                                   const ObDMLStmt *stmt,
+                                                   ObRawExpr *match_expr,
+                                                   bool &need_calc,
+                                                   ObIArray<ObExprConstraint> &constraints)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObRawExpr *, 32> relation_exprs;
+  need_calc = false;
+  if (OB_ISNULL(stmt) || OB_ISNULL(match_expr)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(stmt->get_relation_exprs(relation_exprs))) {
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && !need_calc && i < relation_exprs.count(); ++i) {
+      bool expr_need_calc = false;
+      if (OB_FAIL(inner_check_need_calc_match_score(exec_ctx,
+                                                    relation_exprs.at(i),
+                                                    match_expr,
+                                                    expr_need_calc,
+                                                    constraints))) {
+      } else if (expr_need_calc) {
+        need_calc = true;
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTransformUtils::check_expr_eq_zero(ObExecContext *ctx,
                                          ObRawExpr *expr, 
                                          bool &eq_zero, 
