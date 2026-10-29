@@ -381,22 +381,32 @@ int ObFTRangeDict::match_with_hit(const ObString &single_word,
 int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const
 {
   int ret = OB_SUCCESS;
-  bool found = false;
-  for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
+  // Ranges are built in ascending order and do not overlap. Find the last
+  // range whose start is <= the word with a binary search, then verify its end.
+  // This replaces a linear scan with two string comparisons per range on every
+  // dictionary probe in the tokenization hot path.
+  int64_t left = 0;
+  int64_t right = range_dicts_.size() - 1;
+  int64_t candidate = -1;
+  while (left <= right) {
+    const int64_t mid = left + ((right - left) >> 1);
     if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
+                          range_dicts_[mid].start_.get_word(),
                           single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
-      dict = range_dicts_[i].dict_;
-      found = true;
+        <= 0) {
+      candidate = mid;
+      left = mid + 1;
+    } else {
+      right = mid - 1;
     }
   }
-  if (!found) {
-    // not found, dis match
+  if (candidate >= 0
+      && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                           range_dicts_[candidate].end_.get_word(),
+                           single_word)
+             >= 0) {
+    dict = range_dicts_[candidate].dict_;
+  } else {
     ret = OB_ENTRY_NOT_EXIST;
   }
   return ret;
