@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_DAS
 
+#include <string>
 #include "ob_das_scan_iter.h"
 #include "ob_das_text_retrieval_merge_iter.h"
 
@@ -236,13 +237,37 @@ int ObDASTextRetrievalMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_c
 
     const ObObjMeta &meta = search_text->obj_meta_;
     int64_t doc_length = 0;
-    storage::ObFTParseHelper tokenize_helper;
+    static thread_local storage::ObFTParseHelper cached_helper;
+    static thread_local std::string cached_parser_name;
+    static thread_local std::string cached_parser_properties;
+    static thread_local hash::ObHashMap<ObFTWord, int64_t> token_map;
+    storage::ObFTParseHelper local_helper;
+    storage::ObFTParseHelper *tokenize_helper = &local_helper;
     common::ObSEArray<ObFTWord, 16> tokens;
-    hash::ObHashMap<ObFTWord, int64_t> token_map;
     const int64_t ft_word_bkt_cnt = MAX(search_text_string.length() / 10, 2);
-    if (OB_FAIL(tokenize_helper.init(&alloc, parser_name, parser_properties))) {
-    } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
-    } else if (OB_FAIL(tokenize_helper.segment(
+    const bool same_parser = cached_helper.is_inited()
+        && cached_parser_name.size() == static_cast<size_t>(parser_name.length())
+        && (parser_name.empty() || 0 == MEMCMP(cached_parser_name.data(), parser_name.ptr(), parser_name.length()))
+        && cached_parser_properties.size() == static_cast<size_t>(parser_properties.length())
+        && (parser_properties.empty() || 0 == MEMCMP(cached_parser_properties.data(), parser_properties.ptr(), parser_properties.length()));
+    if (same_parser) {
+      cached_helper.set_allocator(&alloc);
+      tokenize_helper = &cached_helper;
+    } else {
+      cached_helper.reset();
+      if (OB_FAIL(cached_helper.init(&alloc, parser_name, parser_properties))) {
+      } else {
+        cached_parser_name.assign(parser_name.ptr(), parser_name.length());
+        cached_parser_properties.assign(parser_properties.ptr(), parser_properties.length());
+        tokenize_helper = &cached_helper;
+      }
+    }
+    if (OB_SUCC(ret) && token_map.created() && token_map.bucket_count() != ft_word_bkt_cnt
+        && OB_FAIL(token_map.destroy())) {
+    } else if (OB_SUCC(ret) && !token_map.created()
+               && OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+    } else if (OB_SUCC(ret) && OB_FAIL(token_map.reuse())) {
+    } else if (OB_FAIL(tokenize_helper->segment(
                            meta,
                            search_text_string.ptr(),
                            search_text_string.length(),
