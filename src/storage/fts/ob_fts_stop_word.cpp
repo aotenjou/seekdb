@@ -156,7 +156,8 @@ ObAddWord::ObAddWord(
     const ObObjMeta &meta,
     const ObAddWordFlag &flag,
     common::ObIAllocator &allocator,
-    ObFTWordMap &word_map)
+    ObFTWordMap &word_map,
+    const bool tokenize_mode)
   : word_meta_(meta),
     allocator_(allocator),
     word_map_(word_map),
@@ -165,7 +166,8 @@ ObAddWord::ObAddWord(
     stopword_cnt_(0),
     min_token_size_(property.min_token_size_),
     max_token_size_(property.max_token_size_),
-    flag_(flag)
+    flag_(flag),
+    tokenize_mode_(tokenize_mode)
 {
 }
 
@@ -205,7 +207,8 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()
-             && needs_casedown(src.get_word().get_string(), word_meta_.get_collation_type())) {
+             && (!tokenize_mode_
+                 || needs_casedown(src.get_word().get_string(), word_meta_.get_collation_type()))) {
     ObString dst_str;
     if (OB_FAIL(ObCharset::tolower(
                     word_meta_.get_collation_type(),
@@ -256,11 +259,24 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else {
-    // Insert with the original first-occurrence count or update the existing
-    // node in place, so the common repeated-word path performs one hash lookup.
+  } else if (tokenize_mode_) {
+    // TOKENIZE repeatedly aggregates the same words. Insert with the original
+    // first-occurrence count or update the existing node in place, so the hot
+    // path performs one hash lookup instead of get + set.
     AddWordCount add_count(word_freq);
     if (OB_FAIL(word_map_.set_or_update(word, 1/*word count*/, add_count))) {
+    }
+  } else {
+    int64_t word_count = 0;
+    if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
+    } else {
+      if (OB_HASH_NOT_EXIST == ret) {
+        word_count = 1;
+      } else {
+        word_count += word_freq;
+      }
+      if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+      }
     }
   }
   return ret;

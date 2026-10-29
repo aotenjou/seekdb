@@ -206,6 +206,7 @@ public:
 
   OB_INLINE bool is_inited() const { return is_inited_; }
   OB_INLINE void set_allocator(common::ObIAllocator *allocator) { allocator_ = allocator; }
+  OB_INLINE void set_tokenize_mode(const bool tokenize_mode) { tokenize_mode_ = tokenize_mode; }
 
   TO_STRING_KV(KP_(allocator), K_(parser_name), KP_(parser_desc), K_(is_inited));
 
@@ -227,6 +228,7 @@ private:
   ObAddWordFlag add_word_flag_;
   ObFTParserProperty parser_property_;
   bool is_inited_;
+  bool tokenize_mode_ = false;
 
 private:
   static constexpr const char *ENTRY_NAME_DOC_LEN = "doc_len";

@@ -123,6 +123,7 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
   }
 
   if (OB_FAIL(ret)) {
+  } else if (FALSE_IT(tokenize_helper->set_tokenize_mode(true))) {
   } else if (
       (0 != param.fulltext_.length())
       && OB_FAIL(tokenize_helper->segment(

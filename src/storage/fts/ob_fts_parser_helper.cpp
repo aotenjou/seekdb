@@ -378,7 +378,7 @@ int ObFTParseHelper::segment(
     ret = OB_ERR_UNEXPECTED;
   } else {
     words.reuse();
-    ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words);
+    ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words, tokenize_mode_);
     if (OB_FAIL(segment(
                     parser_property_,
                     parser_name_.get_parser_version(),
