@@ -232,18 +232,62 @@ int ObSRDaaTIterImpl::get_next_rows(const int64_t capacity, int64_t &count)
   } else {
     count = 0;
     const int64_t real_capacity = MIN(capacity, iter_param_->max_batch_size_);
-    while (OB_SUCC(ret) && count < real_capacity) {
+    if (iter_param_->filter_only()) {
+      ret = get_next_rows_filter_only(real_capacity, count);
+    }
+    while (OB_SUCC(ret) && !iter_param_->filter_only() && count < real_capacity) {
       if (OB_FAIL(do_one_merge_round(count))) {
         if (OB_UNLIKELY(OB_ITER_END != ret)) {
         }
       }
     }
 
-    if (OB_SUCC(ret) || OB_ITER_END == ret) {
+    if (!iter_param_->filter_only() && (OB_SUCC(ret) || OB_ITER_END == ret)) {
       if (count > 0 && OB_FAIL(project_results(count))) {
       }
     }
 
+  }
+  return ret;
+}
+
+int ObSRDaaTIterImpl::get_next_rows_filter_only(const int64_t capacity, int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  count = 0;
+  ObExpr *id_proj_expr = iter_param_->id_proj_expr_;
+  ObEvalCtx *eval_ctx = iter_param_->eval_ctx_;
+  const ObLimitParam *limit_param = iter_param_->limit_param_;
+  if (OB_ISNULL(id_proj_expr) || OB_ISNULL(eval_ctx) || OB_ISNULL(limit_param)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    ObDatum *id_datums = id_proj_expr->locate_datums_for_update(*eval_ctx, capacity);
+    sql::ObBitVector &id_evaluated_flags = id_proj_expr->get_evaluated_flags(*eval_ctx);
+    ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
+    while (OB_SUCC(ret) && count < capacity) {
+      const ObDatum *id_datum = nullptr;
+      double relevance = 0.0;
+      bool got_valid_id = false;
+      if (OB_FAIL(fill_merge_heap())) {
+        if (OB_UNLIKELY(OB_ITER_END != ret)) {
+        }
+      } else if (OB_FAIL(collect_dims_by_id(id_datum, relevance, got_valid_id))) {
+      } else if (got_valid_id) {
+        ++input_row_cnt_;
+        if (limit_param->is_valid() && input_row_cnt_ <= limit_param->offset_) {
+        } else {
+          guard.set_batch_idx(count);
+          id_datums[count].set_datum(*id_datum);
+          id_evaluated_flags.set(count);
+          id_proj_expr->set_evaluated_projected(*eval_ctx);
+          ++count;
+          ++output_row_cnt_;
+          if (limit_param->is_valid() && output_row_cnt_ >= limit_param->limit_) {
+            ret = OB_ITER_END;
+          }
+        }
+      }
+    }
   }
   return ret;
 }
@@ -321,6 +365,12 @@ int ObSRDaaTIterImpl::collect_dims_by_id(const ObDatum *&id_datum, double &relev
       curr_doc_end = true;
     }
     if (OB_FAIL(merge_heap_->top(top_item))) {
+    } else if (iter_param_->filter_only()) {
+      iter_idx = top_item->iter_idx_;
+      if (OB_FAIL(merge_heap_->pop())) {
+      } else {
+        next_round_iter_idxes_[next_round_cnt_++] = iter_idx;
+      }
     } else if (OB_FAIL(relevance_collector_->collect_one_dim(top_item->iter_idx_, top_item->relevance_))) {
     } else if (FALSE_IT(iter_idx = top_item->iter_idx_)) {
     } else if (OB_FAIL(merge_heap_->pop())) {
@@ -333,6 +383,9 @@ int ObSRDaaTIterImpl::collect_dims_by_id(const ObDatum *&id_datum, double &relev
     id_datum = iter_domain_ids_[iter_idx];
     if (OB_ISNULL(id_datum)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (iter_param_->filter_only()) {
+      got_valid_id = true;
+      relevance = 0.0;
     } else if (OB_FAIL(relevance_collector_->get_result(relevance, got_valid_id))) {
     } else if (got_valid_id && OB_FAIL(process_collected_row(*id_datum, relevance))) {
     }

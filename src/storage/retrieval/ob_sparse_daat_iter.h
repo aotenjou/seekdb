@@ -92,6 +92,7 @@ protected:
   virtual int filter_on_demand(const int64_t count, const double relevance, bool &need_project);
   virtual int cache_result(int64_t &count, const ObDatum &id_datum, const double relevance);
   virtual int project_results(const int64_t count);
+  int get_next_rows_filter_only(const int64_t capacity, int64_t &count);
   int init_merge_heap(const int64_t count);
 protected:
   ObIAllocator *iter_allocator_;
