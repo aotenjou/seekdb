@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX STORAGE_FTS
 #include "ob_fts_index_builder_util.h"
+#include "lib/cpu/ob_cpu_topology.h"
 #include "ob_index_builder_util.h"
 #include "sql/resolver/ddl/ob_ddl_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_util.h"
@@ -1052,7 +1053,10 @@ int ObFtsIndexBuilderUtil::decide_parallelism(
         // FTS index builds are CPU bound; the DDL default is often 1, which
         // leaves most cores idle. Use a bounded fan-out for the main FTS
         // index and doc-word index without multiplying it by every aux table.
-        decided_parallelism = MIN(MAX(original_parallelism, 4L), 8L);
+        {
+          const int64_t cpu_count = MAX(common::get_cpu_count(), 1L);
+          decided_parallelism = MIN(MAX(original_parallelism, 4L), MIN(8L, cpu_count));
+        }
         break;
       case share::schema::ObIndexType::INDEX_TYPE_NORMAL_MULTIVALUE_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_UNIQUE_MULTIVALUE_LOCAL:
